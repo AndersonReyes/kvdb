@@ -2,7 +2,7 @@ use crate::defs::Result;
 use crate::log::{Log, LogEntry};
 use crate::KvdbError;
 use std::collections::HashMap;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 
 /// In memory key value store using hashmap
 pub struct KvStore {
@@ -13,27 +13,27 @@ pub struct KvStore {
 impl KvStore {
     /// Open db
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
-        let mut store = Log::open(path).map(|log| Self {
-            memory: HashMap::new(),
-            commit_log: log,
-        })?;
-
-        store.hydrate_db()?;
-
-        Ok(store)
+        let mut commit_log = Log::open(path)?;
+        let mut memory: HashMap<String, String> = HashMap::new();
+        KvStore::hydrate_memory(&mut memory, commit_log.replay()?)?;
+        commit_log.reset_seek()?;
+        Ok(Self { memory, commit_log })
     }
 
-    /// Replay commit log to Update db state
-    fn hydrate_db(&mut self) -> Result<()> {
-        let entries = self.commit_log.replay()?;
-
+    /// Replay commit log to Update memory state
+    fn hydrate_memory(
+        memory: &mut HashMap<String, String>,
+        entries: impl Iterator<Item = LogEntry>,
+    ) -> Result<()> {
         for entry in entries {
             match entry {
                 LogEntry::Remove { key: k } => {
-                    self.remove(k).expect("Failed to replay log");
+                    if memory.contains_key(&k) {
+                        memory.remove(&k);
+                    }
                 }
                 LogEntry::Set { key: k, value: v } => {
-                    self.set(k, v).expect("Failed to replay log");
+                    memory.insert(k, v);
                 }
             };
         }
@@ -44,9 +44,7 @@ impl KvStore {
     /// remove value at key
     pub fn remove(&mut self, key: String) -> Result<()> {
         if !self.memory.contains_key(&key) {
-            return Err(KvdbError::KvdbError(String::from(
-                "Key not found",
-            )));
+            return Err(KvdbError::KvdbError(String::from("Key not found")));
         }
 
         self.commit_log.commit_rm(&key)?;

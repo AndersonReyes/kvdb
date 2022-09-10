@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 const FILENAME: &str = "kvdb.db";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum LogEntry {
     Set { key: String, value: String },
@@ -18,6 +18,8 @@ pub struct Log {
     write_handle: File,
 }
 
+/// implements db log. Stores writes and removals to disk.
+/// TODO: Right now we store ndjson records to write the log, explore other serialization formats?
 impl Log {
     /// Open db log file
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
@@ -37,9 +39,7 @@ impl Log {
             .open(&filepath)
             .map_err(|e| KvdbError::IO(e))?;
 
-        Ok(Self {
-            write_handle: write_handle,
-        })
+        Ok(Self { write_handle })
     }
 
     fn commit(&mut self, entry: LogEntry) -> Result<()> {
@@ -68,17 +68,18 @@ impl Log {
         self.commit(LogEntry::Remove { key: key.clone() })
     }
 
-    pub fn replay(&mut self) -> Result<Vec<LogEntry>> {
-        let out = Ok(BufReader::new(&self.write_handle)
+    pub fn replay(&self) -> Result<impl Iterator<Item = LogEntry> + '_> {
+        Ok(BufReader::new(&self.write_handle)
             .lines()
             .map(|l| l.expect("Failed to read db file"))
-            .map(|l| serde_json::from_str::<LogEntry>(l.as_str()).expect("corrupted db file"))
-            .collect());
+            .map(|l| serde_json::from_str::<LogEntry>(l.as_str()).expect("corrupted db file")))
+    }
 
+    pub fn reset_seek(&mut self) -> Result<()> {
         self.write_handle
             .seek(SeekFrom::End(0))
             .map_err(KvdbError::from)?;
 
-        out
+        Ok(())
     }
 }

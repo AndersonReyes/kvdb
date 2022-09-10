@@ -38,7 +38,7 @@ fn main() -> Result<()> {
             store
                 .get(args.key)
                 .map(|r| r.or(Some(String::from("Key not found"))))
-        },
+        }
         Commands::Set => {
             store.set(args.key, args.value.unwrap())?;
             Ok(None)
