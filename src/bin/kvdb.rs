@@ -1,5 +1,7 @@
-use clap::{Parser, ValueEnum};
+use clap::{arg, Parser, ValueEnum};
 // use kvdb::KvStore;
+use kvdb::defs::Result;
+use kvdb::KvStore;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about = "in memory key value store", long_about = None)]
@@ -23,21 +25,33 @@ enum Commands {
     Rm,
 }
 
-fn main() {
-    let _: Args = Args::parse();
+fn main() -> Result<()> {
+    let args: Args = Args::parse();
 
-    // let mut store = KvStore::new();
+    let mut store = KvStore::open(std::env::current_dir().expect("error getting current dir"))?;
 
-    panic!("unimplemented");
-    // let result = match args.command {
-    //     Commands::Get => store.get(args.key),
-    //     Commands::Set => {
-    //         store.set(args.key, args.value.unwrap());
-    //         None
-    //     } ,
-    //     Commands::Rm => {
-    //         store.remove(args.key);
-    //         None
-    //     },
-    // };
+    let result: Option<String> = match args.command {
+        Commands::Get => {
+            if args.value.is_some() {
+                panic!("extra arguments");
+            }
+            store
+                .get(args.key)
+                .map(|r| r.or(Some(String::from("Key not found"))))
+        },
+        Commands::Set => {
+            store.set(args.key, args.value.unwrap())?;
+            Ok(None)
+        }
+        Commands::Rm => {
+            store.remove(args.key)?;
+            Ok(None)
+        }
+    }?;
+
+    if let Some(res) = result {
+        println!("{}", res);
+    };
+
+    Ok(())
 }
