@@ -1,4 +1,4 @@
-use crate::defs::{LogOffset, Result};
+use crate::defs::Result;
 use crate::log::{Log, LogEntry, LogFileIterator};
 use crate::KvdbError;
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// In memory key value store using hashmap
 pub struct KvStore {
-    memory: HashMap<String, LogOffset>,
+    memory: HashMap<String, String>,
     commit_log: Log,
 }
 
@@ -14,25 +14,25 @@ impl KvStore {
     /// Open db
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let commit_log = Log::open(path)?;
-        let mut memory: HashMap<String, LogOffset> = HashMap::new();
+        let mut memory: HashMap<String, String> = HashMap::new();
         KvStore::hydrate_memory(&mut memory, commit_log.iter())?;
         Ok(Self { memory, commit_log })
     }
 
     /// Replay commit log to Update memory state
     fn hydrate_memory(
-        memory: &mut HashMap<String, LogOffset>,
+        memory: &mut HashMap<String, String>,
         entries: LogFileIterator,
     ) -> Result<()> {
-        for (entry, offset) in entries {
+        for (entry, _) in entries {
             match entry {
                 LogEntry::Remove { key: k } => {
                     if memory.contains_key(&k) {
                         memory.remove(&k);
                     }
                 }
-                LogEntry::Set { key: k, value: _ } => {
-                    memory.insert(k, offset);
+                LogEntry::Set { key: k, value: v } => {
+                    memory.insert(k, v);
                 }
             };
         }
@@ -53,22 +53,13 @@ impl KvStore {
 
     /// set value at key, overwrites existing
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let offset = self.commit_log.commit_set(&key, &value)?;
-        self.memory.insert(key, offset);
+        self.commit_log.commit_set(&key, &value)?;
+        self.memory.insert(key, value);
         Ok(())
     }
 
     /// get value at key, returns None if it doesn't exist
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
-        let log_entry: Option<LogEntry> = self
-            .memory
-            .get(&key)
-            .map(|&offset| self.commit_log.read_at(offset))
-            .transpose()?;
-
-        match log_entry {
-            Some(LogEntry::Set { key: _, value: v }) => Ok(Some(v)),
-            _ => Ok(None),
-        }
+        Ok(self.memory.get(&key).map(|s| s.clone()))
     }
 }

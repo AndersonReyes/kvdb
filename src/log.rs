@@ -1,11 +1,13 @@
 use crate::defs::KvdbError;
 use crate::defs::{LogOffset, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-const FILENAME: &str = "kvdb.db";
+const FILENAME: &str = "log.ndjson";
+const LOG_START_BYTE: LogOffset = 0;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
@@ -14,8 +16,11 @@ pub enum LogEntry {
     Remove { key: String },
 }
 
+/// Commit log, writes every remove or insert to disk
 pub struct Log {
     write_handle: File,
+    /// Maps key to latest mutation start byte(line) in file.
+    key_to_offset_cache: HashMap<String, LogOffset>,
 }
 
 pub struct LogFileIterator<'a> {
@@ -53,28 +58,25 @@ impl Iterator for LogFileIterator<'_> {
 impl Log {
     /// Open db log file
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
-        let path = path.into();
-
-        let filepath: PathBuf = if path.is_dir() {
-            path.join(Path::new(FILENAME))
-        } else {
-            // assume is a full file path
-            path
-        };
-
-        let write_handle = OpenOptions::new()
+        let filepath = path.into().join(Path::new(FILENAME));
+        let mut write_handle = OpenOptions::new()
             .create(true)
             .read(true)
             .append(true)
             .open(&filepath)
             .map_err(|e| KvdbError::IO(e))?;
 
-        Ok(Self { write_handle })
+        write_handle.seek(SeekFrom::Start(LOG_START_BYTE))?;
+
+        Ok(Self {
+            write_handle,
+            key_to_offset_cache: HashMap::new(),
+        })
     }
 
     /// Write the log entry to disk, returning the bytes offset of the
     /// write.
-    fn commit(&mut self, entry: LogEntry) -> Result<u64> {
+    fn commit(&mut self, entry: LogEntry) -> Result<LogOffset> {
         self.write_handle.seek(SeekFrom::End(0))?;
 
         serde_json::to_string(&entry)
@@ -98,36 +100,39 @@ impl Log {
             })
     }
 
-    pub fn commit_set(&mut self, key: &String, value: &String) -> Result<u64> {
-        self.commit(LogEntry::Set {
+    pub fn commit_set(&mut self, key: &String, value: &String) -> Result<()> {
+        let offset = self.commit(LogEntry::Set {
             key: key.clone(),
             value: value.clone(),
-        })
+        })?;
+        self.key_to_offset_cache.insert(key.to_owned(), offset);
+
+        Ok(())
     }
 
-    pub fn commit_rm(&mut self, key: &String) -> Result<u64> {
-        self.commit(LogEntry::Remove { key: key.clone() })
+    pub fn commit_rm(&mut self, key: &String) -> Result<()> {
+        self.commit(LogEntry::Remove { key: key.clone() })?;
+        Ok(())
     }
 
     /// Iterate log from start to end
     pub fn iter(&self) -> LogFileIterator {
         let mut reader = BufReader::new(&self.write_handle);
         reader
-            .seek(SeekFrom::Start(0))
+            .seek(SeekFrom::Start(LOG_START_BYTE))
             .expect("Failed to set reader seek to beginning of file");
         LogFileIterator { reader }
     }
 
-    pub fn read_at(&mut self, offset: LogOffset) -> Result<LogEntry> {
-        let mut reader = BufReader::new(&self.write_handle);
-        reader.seek(SeekFrom::Start(offset))?;
+    pub fn get(&mut self, key: &String) -> Result<Option<LogEntry>> {
+        match self.key_to_offset_cache.get(key) {
+            None => Ok(None),
+            Some(&offset) => {
+                let mut reader = BufReader::new(&self.write_handle);
+                reader.seek(SeekFrom::Start(offset))?;
 
-        LogFileIterator { reader }
-            .next()
-            .map(|(entry, _)| entry)
-            .ok_or(KvdbError::KvdbError(format!(
-                "Failed to read log at offset {}",
-                offset
-            )))
+                Ok(LogFileIterator { reader }.next().map(|(entry, _)| entry))
+            }
+        }
     }
 }
